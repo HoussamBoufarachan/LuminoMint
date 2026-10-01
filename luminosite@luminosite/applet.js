@@ -392,7 +392,7 @@ class LuminositeApplet extends Applet.Applet {
             if (exitCode !== 0) {
                 let message = (stderr || _("Impossible d'appliquer le réglage")).trim();
                 this.set_applet_tooltip(message);
-                global.logError(`luminosite: ${message}`);
+                global.logError(`LuminoMint: ${message}`);
                 this._flushQueue();
                 return;
             }

@@ -1,7 +1,7 @@
 {
     "uuid": "luminosite@luminosite",
-    "name": "Luminosité",
-    "description": "Luminosité et Night Shift incrustés dans le panneau",
+    "name": "LuminoMint",
+    "description": "LuminoMint — luminosité et Night Shift dans le panneau",
     "icon": "display-brightness",
     "max-instances": 1,
     "version": "1.0"

@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Luminosité
-Comment=Régler la luminosité de l'écran
-# Après `pip install -e .` : commande `luminosite`
+Name=LuminoMint
+Comment=Régler la luminosité et le Night Shift
+# Après `pip install -e .` : commande `luminomint` (alias `luminosite`)
 # Sinon : Exec=python3 /chemin/absolu/vers/luminosite.py
-Exec=luminosite
+Exec=luminomint
 Icon=display-brightness
 Terminal=false
 Categories=Utility;Settings;

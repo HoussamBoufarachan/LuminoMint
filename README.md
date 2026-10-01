@@ -1,4 +1,4 @@
-# Luminosité
+# LuminoMint
 
 Contrôle de la luminosité d’écran et filtre Night Shift sous Linux, via `xrandr`.
 
@@ -33,7 +33,7 @@ Lancer l’interface :
 ```bash
 python3 luminosite.py
 # ou, après install editable :
-luminosite
+luminomint
 ```
 
 Installer / recharger l’applet Cinnamon (lien symbolique + panneau) :
@@ -79,7 +79,7 @@ Les tests unitaires couvrent la logique pure (couleur, gamma, horaires, clamp) s
 ## Structure
 
 ```
-luminosite.py              # Application + CLI
+luminosite.py              # Application + CLI LuminoMint
 luminosite@luminosite/     # Applet Cinnamon
 icons/                     # Remix Icon (PNG/SVG)
 reload-applet.sh           # Recharge l’applet via D-Bus

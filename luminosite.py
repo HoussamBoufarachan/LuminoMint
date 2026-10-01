@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contrôle de luminosité écran via xrandr — interface graphique."""
+"""LuminoMint — contrôle de luminosité écran via xrandr."""
 
 from __future__ import annotations
 
@@ -411,8 +411,8 @@ def apply_schedule(output: str | None = None) -> dict[str, object]:
 def run_cli(argv: list[str] | None = None) -> bool:
     """Exécute une action sans interface. Retourne False s'il faut lancer la fenêtre."""
     parser = argparse.ArgumentParser(
-        prog="luminosite",
-        description="Contrôle de luminosité écran via xrandr.",
+        prog="luminomint",
+        description="LuminoMint — contrôle de luminosité écran via xrandr.",
     )
     parser.add_argument("--status", action="store_true", help="Affiche l'état JSON")
     parser.add_argument(
@@ -1041,7 +1041,7 @@ class ScheduleWheel(tk.Frame):
 class LuminositeApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Luminosité")
+        self.title("LuminoMint")
         self.resizable(False, False)
         self.configure(bg=BG)
 
@@ -1139,7 +1139,7 @@ class LuminositeApp(tk.Tk):
 
         tk.Label(
             header,
-            text="Luminosité",
+            text="LuminoMint",
             bg=BG,
             fg=TEXT,
             font=(UI_FONT, 16, "bold"),
@@ -1742,7 +1742,7 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001
         root = tk.Tk()
         root.withdraw()
-        messagebox.showerror("Luminosité", str(exc))
+        messagebox.showerror("LuminoMint", str(exc))
         root.destroy()
         raise SystemExit(1) from exc
     app.mainloop()
