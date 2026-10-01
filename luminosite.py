@@ -14,7 +14,7 @@ import sys
 import tkinter as tk
 from datetime import datetime, time
 from pathlib import Path
-from tkinter import ttk, messagebox
+from tkinter import messagebox
 
 try:
     from PIL import Image, ImageTk
@@ -65,6 +65,8 @@ ICON_CLOSE = "close-line"
 
 BG = "#16181d"
 CARD = "#22262e"
+CARD_EDGE = "#2e3440"
+CARD_SHADOW = "#1a1d24"
 BTN = "#2d323c"
 BTN_HOVER = "#3a404c"
 TEXT = "#e8eaed"
@@ -73,7 +75,9 @@ GREEN = "#7dd3a0"
 GREEN_DIM = "#4e8f68"
 GREEN_BRIGHT = "#c8f5d8"
 AMBER = "#f0b060"
+AMBER_BRIGHT = "#f5c078"
 UI_FONT = "DejaVu Sans"
+TROUGH = "#2a2f38"
 
 
 def require_xrandr() -> None:
@@ -148,11 +152,19 @@ def load_remix_icon(name: str, color: str, size: int = ICON_SIZE) -> tk.PhotoIma
         if img.size != (size, size):
             img = img.resize((size, size), Image.Resampling.LANCZOS)
         red, green, blue = _hex_to_rgb(color)
-        tinted = []
-        for _r, _g, _b, alpha in img.getdata():
-            tinted.append((red, green, blue, alpha) if alpha else (0, 0, 0, 0))
-        img.putdata(tinted)
-        return ImageTk.PhotoImage(img)
+        _r_ch, _g_ch, _b_ch, alpha = img.split()
+        # Alpha binaire : évite le halo de couleur sur fond sombre
+        alpha = alpha.point(lambda a: 255 if a >= 96 else 0)
+        tinted = Image.merge(
+            "RGBA",
+            (
+                Image.new("L", img.size, red),
+                Image.new("L", img.size, green),
+                Image.new("L", img.size, blue),
+                alpha,
+            ),
+        )
+        return ImageTk.PhotoImage(tinted)
     return tk.PhotoImage(file=str(path))
 
 
@@ -198,6 +210,9 @@ def night_shift_to_gamma(intensity: float) -> tuple[float, float, float]:
     )
 
 
+_WARM_GAMMA = night_shift_to_gamma(MAX_NIGHT_SHIFT)
+
+
 def _parse_gamma(raw: str) -> tuple[float, float, float] | None:
     match = re.search(
         r"Gamma:\s*([0-9.]+)\s*:\s*([0-9.]+)\s*:\s*([0-9.]+)",
@@ -218,7 +233,7 @@ def _parse_gamma(raw: str) -> tuple[float, float, float] | None:
 
 def gamma_to_night_shift(gamma: tuple[float, float, float]) -> float:
     """Estime l'intensité Night Shift à partir du canal bleu (le plus sensible)."""
-    _warm_r, _warm_g, warm_b = night_shift_to_gamma(MAX_NIGHT_SHIFT)
+    warm_b = _WARM_GAMMA[2]
     blue = _clamp(gamma[2], warm_b, 1.0)
     if blue >= 0.98:
         return 0.0
@@ -228,29 +243,44 @@ def gamma_to_night_shift(gamma: tuple[float, float, float]) -> float:
     return _clamp(round((1.0 - blue) / span, 2), MIN_NIGHT_SHIFT, MAX_NIGHT_SHIFT)
 
 
-def get_gamma(output: str) -> tuple[float, float, float]:
+def _query_output_state(output: str) -> tuple[float, tuple[float, float, float]]:
+    """Retourne (brightness, gamma) via un seul appel xrandr --verbose."""
     result = subprocess.run(
         ["xrandr", "--verbose"],
         check=True,
         capture_output=True,
         text=True,
     )
+    brightness: float | None = None
+    gamma: tuple[float, float, float] | None = None
     current_output = None
-    pending: tuple[float, float, float] | None = None
     for line in result.stdout.splitlines():
         if " connected" in line or " disconnected" in line:
             current_output = line.split()[0]
             continue
         if current_output != output:
             continue
-        parsed = _parse_gamma(line)
-        if parsed:
-            pending = parsed
+        if brightness is None:
+            match = re.search(r"Brightness:\s*([0-9.]+)", line)
+            if match:
+                brightness = float(match.group(1))
+        if gamma is None:
+            parsed = _parse_gamma(line)
+            if parsed:
+                gamma = parsed
+        if brightness is not None and gamma is not None:
             break
-    if pending:
-        return pending
-    parsed = _parse_gamma(result.stdout)
-    return parsed if parsed else (1.0, 1.0, 1.0)
+    if brightness is None:
+        match = re.search(r"Brightness:\s*([0-9.]+)", result.stdout)
+        brightness = float(match.group(1)) if match else 1.0
+    if gamma is None:
+        gamma = _parse_gamma(result.stdout) or (1.0, 1.0, 1.0)
+    return brightness, gamma
+
+
+def get_gamma(output: str) -> tuple[float, float, float]:
+    _brightness, gamma = _query_output_state(output)
+    return gamma
 
 
 def set_display(
@@ -293,8 +323,8 @@ def next_compact_brightness(current: float) -> float:
 def snapshot(output: str | None = None) -> dict[str, object]:
     require_xrandr()
     output = output or detect_output()
-    brightness = get_brightness(output)
-    night_shift = gamma_to_night_shift(get_gamma(output))
+    brightness, gamma = _query_output_state(output)
+    night_shift = gamma_to_night_shift(gamma)
     return {
         "output": output,
         "brightness": round(brightness, 2),
@@ -391,10 +421,11 @@ def desired_night_from_schedule(
 
 def apply_schedule(output: str | None = None) -> dict[str, object]:
     """Applique le Night Shift selon la programmation, sans toucher sinon."""
+    schedule = load_schedule()
     data = snapshot(output)
-    desired = desired_night_from_schedule()
+    desired = desired_night_from_schedule(schedule)
     if desired is None:
-        data["schedule"] = load_schedule()
+        data["schedule"] = schedule
         data["schedule_active"] = False
         return data
     current_night = float(data["night_shift"])
@@ -402,7 +433,7 @@ def apply_schedule(output: str | None = None) -> dict[str, object]:
         brightness = float(data["brightness"])
         set_display(str(data["output"]), brightness, desired)
         data = snapshot(str(data["output"]))
-    data["schedule"] = load_schedule()
+    data["schedule"] = schedule
     data["schedule_active"] = True
     data["schedule_desired"] = desired
     return data
@@ -639,12 +670,161 @@ def schedule_duration_hours(start: str, end: str) -> float:
     return span / 60.0
 
 
+def format_duration_hours(hours: float) -> str:
+    if abs(hours - round(hours)) < 0.01:
+        return f"{int(round(hours))} h"
+    hour = int(hours)
+    minute = int(round((hours - hour) * 60))
+    if minute == 60:
+        hour += 1
+        minute = 0
+    return f"{hour} h {minute:02d}"
+
+
+def map_scale_value(
+    x: float,
+    width: float,
+    low: float,
+    high: float,
+    pad: float = 10.0,
+) -> float:
+    """Convertit une position X en valeur de slider (logique pure)."""
+    usable = max(1.0, width - 2.0 * pad)
+    fraction = _clamp((x - pad) / usable, 0.0, 1.0)
+    return low + fraction * (high - low)
+
+
+class SoftCard(tk.Frame):
+    """Carte plate avec bordure 1 px nette (sans ombre qui bave)."""
+
+    def __init__(self, parent: tk.Misc, **kwargs) -> None:
+        super().__init__(parent, bg=CARD_EDGE, padx=1, pady=1, **kwargs)
+        self.body = tk.Frame(self, bg=CARD, padx=16, pady=14)
+        self.body.pack(fill="both", expand=True)
+
+
+class AccentScale(tk.Canvas):
+    """Slider horizontal canvas : piste plate, fill accent, curseur net."""
+
+    HEIGHT = 24
+    KNOB = 7
+    TRACK_H = 4
+    PAD = 8
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        from_: float,
+        to: float,
+        variable: tk.DoubleVar,
+        command=None,
+        accent: str = GREEN,
+        length: int = 260,
+        bg: str = CARD,
+        trough: str = TROUGH,
+        **kwargs,
+    ) -> None:
+        super().__init__(
+            parent,
+            width=length,
+            height=self.HEIGHT,
+            bg=bg,
+            highlightthickness=0,
+            bd=0,
+            cursor="hand2",
+            **kwargs,
+        )
+        self._from = float(from_)
+        self._to = float(to)
+        self._variable = variable
+        self._command = command
+        self._accent = accent
+        self._trough = trough
+        self._dragging = False
+        self.bind("<Configure>", lambda _e: self.redraw())
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<B1-Motion>", self._on_drag)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        variable.trace_add("write", lambda *_: self._on_var())
+        self.after_idle(self.redraw)
+
+    def _on_var(self) -> None:
+        if not self._dragging:
+            self.redraw()
+
+    def set(self, value: float) -> None:
+        self._variable.set(value)
+        self.redraw()
+        if self._command is not None:
+            self._command(str(value))
+
+    def get(self) -> float:
+        return float(self._variable.get())
+
+    def _value_at(self, x: int) -> float:
+        width = max(self.winfo_width(), 1)
+        return map_scale_value(x, width, self._from, self._to, float(self.PAD))
+
+    def _on_press(self, event: tk.Event) -> str:
+        self._dragging = True
+        self.set(self._value_at(event.x))
+        return "break"
+
+    def _on_drag(self, event: tk.Event) -> str:
+        if not self._dragging:
+            return "break"
+        self.set(self._value_at(event.x))
+        return "break"
+
+    def _on_release(self, _event: tk.Event) -> str:
+        self._dragging = False
+        self.redraw()
+        return "break"
+
+    def redraw(self) -> None:
+        self.delete("all")
+        width = max(self.winfo_width(), int(self.cget("width")))
+        pad = float(self.PAD)
+        cy = self.HEIGHT / 2
+        y0 = cy - self.TRACK_H / 2
+        y1 = cy + self.TRACK_H / 2
+
+        # Piste plate (pas d'ovales / pas d'ombre → bords nets sous Tk)
+        self.create_rectangle(
+            pad, y0, width - pad, y1, fill=self._trough, outline="", width=0
+        )
+
+        value = _clamp(float(self._variable.get()), self._from, self._to)
+        span = self._to - self._from
+        frac = 0.0 if span <= 0 else (value - self._from) / span
+        usable = max(1.0, width - 2.0 * pad)
+        knob_x = pad + frac * usable
+
+        if knob_x > pad + 0.5:
+            self.create_rectangle(
+                pad, y0, knob_x, y1, fill=self._accent, outline="", width=0
+            )
+
+        r = self.KNOB
+        # Curseur plein, contour sombre fin (pas d'anneau accent qui bave)
+        self.create_oval(
+            knob_x - r,
+            cy - r,
+            knob_x + r,
+            cy + r,
+            fill=TEXT,
+            outline=CARD_SHADOW,
+            width=1,
+        )
+
+
 class ScheduleWheel(tk.Frame):
     """Roue 24 h — réglage uniquement via les poignées aux extrémités."""
 
     SIZE = 280
-    RING = 22
-    HANDLE = 18
+    RING = 14
+    HANDLE = 15
     SNAP = 5  # minutes
     TRACK = "#1a1d24"
     TRACK_EDGE = "#2e3440"
@@ -668,6 +848,8 @@ class ScheduleWheel(tk.Frame):
         self._arc_start_minutes = 0
         self._arc_end_minutes = 0
         self._suppress = False
+        self._icon_cache: dict[tuple[str, str, int], tk.PhotoImage] = {}
+        self._handle_images: dict[str, tk.PhotoImage] = {}
 
         header = tk.Frame(self, bg=CARD)
         header.pack(fill="x", pady=(0, 10))
@@ -676,9 +858,15 @@ class ScheduleWheel(tk.Frame):
 
         left = tk.Frame(header, bg=CARD)
         left.grid(row=0, column=0, sticky="w")
+        start_title = tk.Frame(left, bg=CARD)
+        start_title.pack(anchor="w")
+        start_ic = self._remix_icon(ICON_MOON_LINE, AMBER, 14)
+        start_lbl_ic = tk.Label(start_title, image=start_ic, bg=CARD)
+        start_lbl_ic.image = start_ic
+        start_lbl_ic.pack(side="left")
         tk.Label(
-            left, text="☾  Coucher", bg=CARD, fg=AMBER, font=(UI_FONT, 9, "bold")
-        ).pack(anchor="w")
+            start_title, text="Coucher", bg=CARD, fg=AMBER, font=(UI_FONT, 9, "bold")
+        ).pack(side="left", padx=(6, 0))
         self.start_lbl = tk.Label(
             left, text="22:00", bg=CARD, fg=TEXT, font=(UI_FONT, 22, "bold")
         )
@@ -686,9 +874,15 @@ class ScheduleWheel(tk.Frame):
 
         right = tk.Frame(header, bg=CARD)
         right.grid(row=0, column=1, sticky="e")
+        end_title = tk.Frame(right, bg=CARD)
+        end_title.pack(anchor="e")
         tk.Label(
-            right, text="Réveil  ☀", bg=CARD, fg=GREEN, font=(UI_FONT, 9, "bold")
-        ).pack(anchor="e")
+            end_title, text="Réveil", bg=CARD, fg=GREEN, font=(UI_FONT, 9, "bold")
+        ).pack(side="left")
+        end_ic = self._remix_icon(ICON_SUN_LINE, GREEN, 14)
+        end_lbl_ic = tk.Label(end_title, image=end_ic, bg=CARD)
+        end_lbl_ic.image = end_ic
+        end_lbl_ic.pack(side="left", padx=(6, 0))
         self.end_lbl = tk.Label(
             right, text="07:00", bg=CARD, fg=TEXT, font=(UI_FONT, 22, "bold")
         )
@@ -712,6 +906,12 @@ class ScheduleWheel(tk.Frame):
         self.start_var.trace_add("write", lambda *_: self._on_var_write())
         self.end_var.trace_add("write", lambda *_: self._on_var_write())
         self.redraw()
+
+    def _remix_icon(self, name: str, color: str, size: int) -> tk.PhotoImage:
+        key = (name, color, size)
+        if key not in self._icon_cache:
+            self._icon_cache[key] = load_remix_icon(name, color, size)
+        return self._icon_cache[key]
 
     def _on_var_write(self) -> None:
         if self._suppress or self._drag:
@@ -905,19 +1105,11 @@ class ScheduleWheel(tk.Frame):
             cx + inner,
             cy + inner,
             fill="#12141a",
-            outline="#252a33",
+            outline=self.TRACK_EDGE,
             width=1,
         )
 
-        # Anneau de fond (double trait pour du relief)
-        self.canvas.create_oval(
-            cx - track - 1,
-            cy - track - 1,
-            cx + track + 1,
-            cy + track + 1,
-            outline=self.TRACK_EDGE,
-            width=self.RING + 4,
-        )
+        # Anneau de fond (un seul trait net)
         self.canvas.create_oval(
             cx - track,
             cy - track,
@@ -927,7 +1119,7 @@ class ScheduleWheel(tk.Frame):
             width=self.RING,
         )
 
-        # Arc durée ambre
+        # Arc durée ambre (un seul trait — pas de liseré qui bave)
         tk_start = (90 - start_a) % 360
         self.canvas.create_arc(
             cx - track,
@@ -939,18 +1131,6 @@ class ScheduleWheel(tk.Frame):
             style="arc",
             outline=AMBER,
             width=self.RING,
-        )
-        # Liseré intérieur plus clair sur l'arc
-        self.canvas.create_arc(
-            cx - track,
-            cy - track,
-            cx + track,
-            cy + track,
-            start=tk_start,
-            extent=-extent,
-            style="arc",
-            outline="#f5c078",
-            width=max(3, self.RING // 5),
         )
 
         # Graduations 24 h
@@ -966,7 +1146,7 @@ class ScheduleWheel(tk.Frame):
                 inner_pt[0],
                 inner_pt[1],
                 fill=self.TICK_MAJOR if major else self.TICK,
-                width=2 if major else 1,
+                width=1,
             )
             if major:
                 label_pos = self._point(angle, r - self.RING / 2 - 26)
@@ -983,12 +1163,7 @@ class ScheduleWheel(tk.Frame):
         hours = schedule_duration_hours(
             _hhmm_from_minutes(start_m), _hhmm_from_minutes(end_m)
         )
-        if abs(hours - round(hours)) < 0.01:
-            duration_txt = f"{int(round(hours))} h"
-        else:
-            h = int(hours)
-            m = int(round((hours - h) * 60))
-            duration_txt = f"{h} h {m:02d}"
+        duration_txt = format_duration_hours(hours)
         self.canvas.create_text(
             cx, cy - 8, text=duration_txt, fill=TEXT, font=(UI_FONT, 22, "bold")
         )
@@ -1005,16 +1180,8 @@ class ScheduleWheel(tk.Frame):
     def _draw_handle(self, angle: float, which: str) -> None:
         x, y = self._point(angle)
         r = self.HANDLE
-        # Ombre douce
-        self.canvas.create_oval(
-            x - r + 1,
-            y - r + 2,
-            x + r + 1,
-            y + r + 2,
-            fill="#0c0e12",
-            outline="",
-        )
         accent = AMBER if which == "start" else GREEN
+        # Disque plein + contour 1 px (évite ombres / doubles anneaux qui bavent)
         self.canvas.create_oval(
             x - r,
             y - r,
@@ -1022,20 +1189,12 @@ class ScheduleWheel(tk.Frame):
             y + r,
             fill="#1e222b",
             outline=accent,
-            width=3,
+            width=1,
         )
-        self.canvas.create_oval(
-            x - r + 4,
-            y - r + 4,
-            x + r - 4,
-            y + r - 4,
-            fill="#252a34",
-            outline="",
-        )
-        glyph = "☾" if which == "start" else "☀"
-        self.canvas.create_text(
-            x, y, text=glyph, fill=accent, font=(UI_FONT, 13, "bold")
-        )
+        icon_name = ICON_MOON_LINE if which == "start" else ICON_SUN_LINE
+        icon = self._remix_icon(icon_name, accent, 12)
+        self._handle_images[which] = icon
+        self.canvas.create_image(x, y, image=icon)
 
 
 class LuminositeApp(tk.Tk):
@@ -1109,19 +1268,6 @@ class LuminositeApp(tk.Tk):
         return btn
 
     def _build_ui(self) -> None:
-        style = ttk.Style(self)
-        style.theme_use("clam")
-        for name, accent in (("Bright", GREEN), ("Warm", AMBER)):
-            style.configure(
-                f"{name}.Horizontal.TScale",
-                background=CARD,
-                troughcolor="#2a2f38",
-                bordercolor="#2a2f38",
-                lightcolor=accent,
-                darkcolor=accent,
-                sliderthickness=18,
-            )
-
         root = tk.Frame(self, bg=BG, padx=20, pady=18)
         root.grid(row=0, column=0, sticky="nsew")
         root.grid_remove()
@@ -1171,8 +1317,9 @@ class LuminositeApp(tk.Tk):
             actions, ICON_CLOSE, MUTED, self.destroy, size=18, pad=6
         ).pack(side="left")
 
-        bright = tk.Frame(root, bg=CARD, padx=16, pady=14)
-        bright.grid(row=1, column=0, sticky="ew", pady=(18, 10))
+        bright_card = SoftCard(root)
+        bright_card.grid(row=1, column=0, sticky="ew", pady=(18, 10))
+        bright = bright_card.body
         bright.columnconfigure(1, weight=1)
 
         self.bright_card_icon = tk.Label(bright, bg=CARD)
@@ -1209,18 +1356,17 @@ class LuminositeApp(tk.Tk):
         ).grid(row=0, column=0, padx=(0, 10))
 
         self.brightness = tk.DoubleVar(value=1.0)
-        self.scale = ttk.Scale(
+        self.scale = AccentScale(
             slider_row,
             from_=MIN_BRIGHTNESS,
             to=MAX_BRIGHTNESS,
-            orient="horizontal",
-            length=260,
             variable=self.brightness,
             command=self._on_scale,
-            style="Bright.Horizontal.TScale",
+            accent=GREEN,
+            length=260,
+            bg=CARD,
         )
         self.scale.grid(row=0, column=1, sticky="ew")
-        self._bind_scale_jump(self.scale)
 
         self._icon_button(
             slider_row,
@@ -1232,8 +1378,9 @@ class LuminositeApp(tk.Tk):
             bg=BTN,
         ).grid(row=0, column=2, padx=(10, 0))
 
-        night = tk.Frame(root, bg=CARD, padx=16, pady=14)
-        night.grid(row=2, column=0, sticky="ew")
+        night_card = SoftCard(root)
+        night_card.grid(row=2, column=0, sticky="ew")
+        night = night_card.body
         night.columnconfigure(1, weight=1)
 
         self.night_card_icon = tk.Label(night, bg=CARD)
@@ -1276,18 +1423,17 @@ class LuminositeApp(tk.Tk):
         ).pack(anchor="e")
 
         self.night_shift = tk.DoubleVar(value=0.0)
-        self.night_scale = ttk.Scale(
+        self.night_scale = AccentScale(
             night,
             from_=MIN_NIGHT_SHIFT,
             to=MAX_NIGHT_SHIFT,
-            orient="horizontal",
-            length=260,
             variable=self.night_shift,
             command=self._on_night_scale,
-            style="Warm.Horizontal.TScale",
+            accent=AMBER,
+            length=260,
+            bg=CARD,
         )
         self.night_scale.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(14, 12))
-        self._bind_scale_jump(self.night_scale)
 
         toggle_icon = self._remix_icon(ICON_MOON_LINE, MUTED, 18)
         self.night_toggle = tk.Button(
@@ -1448,24 +1594,42 @@ class LuminositeApp(tk.Tk):
         self._sync_compact_buttons(applied_b, applied_n)
         self._updating = False
 
-    def _bind_scale_jump(self, scale: ttk.Scale) -> None:
-        """Clic / glisser : le curseur suit la position, pas les extrêmes ttk."""
-        scale.bind("<Button-1>", self._on_scale_jump)
-        scale.bind("<B1-Motion>", self._on_scale_jump)
+    def _flash_button(
+        self,
+        btn: tk.Button,
+        flash: str,
+        restore: str,
+        delay: int = 150,
+    ) -> None:
+        btn.configure(bg=flash)
 
-    def _scale_value_at(self, scale: ttk.Scale, x: int) -> float:
-        low = float(scale.cget("from"))
-        high = float(scale.cget("to"))
-        width = max(scale.winfo_width(), 1)
-        # Marge = moitié du curseur, pour que le clic corresponde au centre
-        pad = max(8, int(scale.winfo_height() * 0.45))
-        usable = max(1, width - 2 * pad)
-        fraction = _clamp((x - pad) / usable, 0.0, 1.0)
-        return low + fraction * (high - low)
+        def _restore() -> None:
+            try:
+                btn.configure(bg=restore)
+            except tk.TclError:
+                pass
 
-    def _on_scale_jump(self, event: tk.Event) -> str:
-        event.widget.set(self._scale_value_at(event.widget, event.x))
-        return "break"
+        self.after(delay, _restore)
+
+    def _pulse_widget(
+        self,
+        widget: tk.Widget,
+        flash: str,
+        restore: str,
+        delay: int = 120,
+    ) -> None:
+        try:
+            widget.configure(bg=flash)
+        except tk.TclError:
+            return
+
+        def _restore() -> None:
+            try:
+                widget.configure(bg=restore)
+            except tk.TclError:
+                pass
+
+        self.after(delay, _restore)
 
     def _on_scale(self, _raw: str) -> None:
         if self._updating:
@@ -1490,11 +1654,15 @@ class LuminositeApp(tk.Tk):
         current = float(self.night_shift.get())
         target = 0.0 if current > 0.005 else 0.50
         self._apply(float(self.brightness.get()), target)
+        flash = AMBER_BRIGHT if target > 0.005 else BTN_HOVER
+        self._flash_button(self.night_toggle, flash, BTN)
+        if self._compact:
+            self._pulse_widget(self.compact_night_btn, flash, BTN)
 
     def _load_current(self) -> None:
         try:
-            current = get_brightness(self.output)
-            night = gamma_to_night_shift(get_gamma(self.output))
+            current, gamma = _query_output_state(self.output)
+            night = gamma_to_night_shift(gamma)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Erreur", str(exc))
             return
@@ -1566,7 +1734,7 @@ class LuminositeApp(tk.Tk):
 
     def _is_interactive(self, widget: tk.Misc) -> bool:
         return isinstance(
-            widget, (tk.Button, ttk.Scale, ttk.Button, tk.Entry, ttk.Entry, tk.Canvas)
+            widget, (tk.Button, tk.Entry, tk.Canvas, AccentScale)
         )
 
     def _enable_window_drag(self, widget: tk.Misc) -> None:
@@ -1613,11 +1781,14 @@ class LuminositeApp(tk.Tk):
 
     def cycle_compact_brightness(self) -> None:
         self._apply(next_compact_brightness(float(self.brightness.get())))
+        self._pulse_widget(self.compact_bright_btn, BTN_HOVER, BTN, 120)
 
     def toggle_compact_night(self) -> None:
         current = float(self.night_shift.get())
         target = 0.0 if current > 0.005 else COMPACT_NIGHT_SHIFT
         self._apply(float(self.brightness.get()), target)
+        flash = AMBER_BRIGHT if target > 0.005 else BTN_HOVER
+        self._pulse_widget(self.compact_night_btn, flash, BTN)
 
     def _set_schedule_wheel_visible(self, visible: bool) -> None:
         if visible:
@@ -1665,7 +1836,7 @@ class LuminositeApp(tk.Tk):
             state = "actif" if desired and desired > 0.005 else "hors plage"
             hours = schedule_duration_hours(start, end)
             self.schedule_status_var.set(
-                f"{start} → {end} · {hours:g} h · {state}"
+                f"{start} → {end} · {format_duration_hours(hours)} · {state}"
             )
         else:
             self.schedule_btn.configure(
@@ -1695,6 +1866,7 @@ class LuminositeApp(tk.Tk):
                 }
             )
             self._sync_schedule_ui(schedule)
+            self._flash_button(self.schedule_btn, BTN_HOVER, BTN)
             return
 
         intensity = float(self.night_shift.get())
@@ -1710,6 +1882,7 @@ class LuminositeApp(tk.Tk):
         )
         self.schedule_wheel.set_times(str(schedule["start"]), str(schedule["end"]))
         self._sync_schedule_ui(schedule)
+        self._flash_button(self.schedule_btn, AMBER_BRIGHT, AMBER)
         self._tick_schedule(force=True)
 
     def _tick_schedule(self, force: bool = False) -> None:
