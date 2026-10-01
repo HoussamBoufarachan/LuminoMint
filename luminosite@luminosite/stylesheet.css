@@ -1,0 +1,25 @@
+.luminosite-box {
+    spacing: 2px;
+    padding: 0 2px;
+}
+
+.luminosite-button {
+    padding: 0 6px;
+    border-radius: 4px;
+}
+
+.luminosite-button:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+.luminosite-sun StIcon {
+    color: #7dd3a0;
+}
+
+.luminosite-moon-on StIcon {
+    color: #f0b060;
+}
+
+.luminosite-moon-off StIcon {
+    color: #8b919a;
+}

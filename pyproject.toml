@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "luminosite"
+version = "1.0.0"
+description = "Contrôle de luminosité et Night Shift via xrandr (GUI Tk + applet Cinnamon)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "luminosite" }]
+keywords = ["brightness", "xrandr", "night-shift", "cinnamon", "linux"]
+dependencies = [
+    "Pillow>=9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.scripts]
+luminosite = "luminosite:main"
+
+[tool.setuptools]
+py-modules = ["luminosite"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["luminosite"]
+omit = ["tests/*"]

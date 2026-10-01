@@ -1,0 +1,2 @@
+# Dépendances runtime (équivalent : pip install -e .)
+Pillow>=9.0

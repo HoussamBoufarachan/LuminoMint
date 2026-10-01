@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Luminosité
+Comment=Régler la luminosité de l'écran
+# Après `pip install -e .` : commande `luminosite`
+# Sinon : Exec=python3 /chemin/absolu/vers/luminosite.py
+Exec=luminosite
+Icon=display-brightness
+Terminal=false
+Categories=Utility;Settings;
+StartupNotify=false
